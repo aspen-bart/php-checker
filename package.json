@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Interne tool: controleert elke 5 minuten of klantwebsites online zijn en of de homepage er nog hetzelfde uitziet (hack-detectie).",
+  "description": "Interne tool: controleert elke 10 minuten of klantwebsites online zijn en of de homepage er nog hetzelfde uitziet (hack-detectie).",
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning server.js"
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "export": "node --disable-warning=ExperimentalWarning scripts/export.js"
   },
   "engines": {
     "node": ">=22.13"
@@ -13,7 +14,7 @@
   "dependencies": {
     "express": "^4.21.2",
     "pixelmatch": "^7.1.0",
-    "playwright-core": "^1.48.2",
+    "playwright-core": "1.64.1",
     "pngjs": "^7.0.0"
   }
 }

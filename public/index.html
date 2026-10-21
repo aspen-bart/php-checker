@@ -14,6 +14,7 @@
       <a href="#checks" data-tab="checks">Checks</a>
       <a href="#alerts" data-tab="alerts">Meldingen <span id="alertBadge" class="badge hidden">0</span></a>
     </nav>
+    <label class="global-company" title="Filtert de hele tool op één company">🏢 <select id="globalCompany" class="company-select"><option value="">Alle companies</option></select></label>
     <div class="runinfo">
       <span id="runStatus">…</span>
       <button id="runNow" class="btn small">Nu alles checken</button>
@@ -32,6 +33,7 @@
         <summary>+ Websites toevoegen</summary>
         <textarea id="addUrls" rows="5" placeholder="Eén URL per regel, bv.&#10;https://www.klant.nl/&#10;klant2.nl"></textarea>
         <div class="row">
+          <label>Company: <select id="addCompany" class="company-select"></select></label>
           <button id="addBtn" class="btn">Toevoegen</button>
           <span id="addResult" class="muted"></span>
         </div>
@@ -39,6 +41,7 @@
 
       <div class="toolbar">
         <input id="siteSearch" type="search" placeholder="Zoek website…">
+        <select id="siteCompany" class="company-select"><option value="">Alle companies</option></select>
         <select id="siteLevel">
           <option value="">Alle statussen</option>
           <option value="hacked">Mogelijk gehackt</option>
@@ -58,11 +61,21 @@
         <span class="muted" id="siteCount"></span>
       </div>
 
+      <div id="bulkBar" class="bulkbar hidden">
+        <strong id="bulkCount"></strong>
+        <label>Company: <select id="bulkCompany" class="company-select"></select></label>
+        <button id="bulkApply" class="btn small">Company toewijzen</button>
+        <button id="bulkCheck" class="btn small ghost">⟳ Nu checken</button>
+        <button id="bulkClear" class="btn small ghost">Selectie wissen</button>
+      </div>
+
       <div class="tablewrap">
         <table class="grid" id="sitesTable">
           <thead><tr>
+            <th class="chk"><input type="checkbox" id="selAll" title="Alles (zichtbaar) selecteren"></th>
             <th data-sort="level">Status</th>
             <th data-sort="name">Website</th>
+            <th data-sort="company">Company</th>
             <th data-sort="last_status">HTTP</th>
             <th data-sort="php">PHP</th>
             <th data-sort="last_ms">Laadtijd</th>
@@ -79,6 +92,7 @@
     <!-- CHECKS -->
     <section id="tab-checks" class="tab hidden">
       <div class="toolbar">
+        <select id="chkCompany" class="company-select"><option value="">Alle companies</option></select>
         <select id="chkSite"><option value="">Alle websites</option></select>
         <select id="chkLevel">
           <option value="">Alle resultaten</option>
@@ -102,6 +116,7 @@
           <thead><tr>
             <th data-sort="ts">Tijd</th>
             <th data-sort="site">Website</th>
+            <th data-sort="company">Company</th>
             <th data-sort="level">Resultaat</th>
             <th data-sort="status">HTTP</th>
             <th data-sort="ms">Laadtijd</th>
@@ -133,6 +148,7 @@
           <option value="warning">Waarschuwing</option>
           <option value="info">Hersteld</option>
         </select>
+        <select id="alCompany" class="company-select"><option value="">Alle companies</option></select>
         <select id="alSite"><option value="">Alle websites</option></select>
         <button id="ackAll" class="btn small ghost">Alles afhandelen</button>
       </div>

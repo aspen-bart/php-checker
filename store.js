@@ -1,6 +1,7 @@
 // Opslag: SQLite (ingebouwd in Node 22) + screenshots op schijf (max 2 per website).
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -68,8 +69,28 @@ for (const [col, def] of [
   ['php_source', 'TEXT'],
   ['php_detected', 'INTEGER'],
   ['php_at', 'INTEGER'],
+  ['company_id', 'INTEGER'],
 ]) {
   if (!siteCols.includes(col)) db.exec(`ALTER TABLE sites ADD COLUMN ${col} ${def}`);
+}
+
+// Companies (eigenaar van de websites).
+db.exec('CREATE TABLE IF NOT EXISTS companies (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE)');
+export const DEFAULT_COMPANIES = ['Aspen Digital', 'Outtask', 'Ultimum', 'Digital Sky'];
+for (const n of DEFAULT_COMPANIES) db.prepare('INSERT OR IGNORE INTO companies (name) VALUES (?)').run(n);
+// Bestaande websites zonder company horen bij Aspen Digital.
+db.prepare("UPDATE sites SET company_id = (SELECT id FROM companies WHERE name = 'Aspen Digital') WHERE company_id IS NULL").run();
+
+export const listCompanies = () => db.prepare('SELECT * FROM companies ORDER BY id').all();
+export function addCompany(name) {
+  name = String(name || '').trim().slice(0, 60);
+  if (!name) return null;
+  db.prepare('INSERT OR IGNORE INTO companies (name) VALUES (?)').run(name);
+  return db.prepare('SELECT * FROM companies WHERE name = ?').get(name);
+}
+export function setCompany(siteIds, companyId) {
+  const st = db.prepare('UPDATE sites SET company_id = ? WHERE id = ?');
+  for (const id of siteIds) st.run(companyId, id);
 }
 
 const json = (v) => (v == null ? null : JSON.parse(v));
@@ -108,16 +129,20 @@ export const nameFromUrl = (url) => {
 };
 
 export function listSites() {
-  return db.prepare('SELECT * FROM sites ORDER BY name').all().map(siteFromRow);
+  return db
+    .prepare('SELECT s.*, c.name AS company FROM sites s LEFT JOIN companies c ON c.id = s.company_id ORDER BY s.name')
+    .all()
+    .map(siteFromRow);
 }
 
 export function getSite(id) {
   return siteFromRow(db.prepare('SELECT * FROM sites WHERE id = ?').get(id));
 }
 
-export function addSites(lines) {
+export function addSites(lines, companyId = null) {
+  companyId ||= db.prepare("SELECT id FROM companies WHERE name = 'Aspen Digital'").get()?.id;
   const insert = db.prepare(
-    'INSERT OR IGNORE INTO sites (url, name, created_at) VALUES (?, ?, ?)'
+    'INSERT OR IGNORE INTO sites (url, name, created_at, company_id) VALUES (?, ?, ?, ?)'
   );
   const added = [];
   const skipped = [];
@@ -127,7 +152,7 @@ export function addSites(lines) {
       if (String(line).trim()) skipped.push(String(line).trim());
       continue;
     }
-    const r = insert.run(url, nameFromUrl(url), Date.now());
+    const r = insert.run(url, nameFromUrl(url), Date.now(), companyId);
     if (r.changes) added.push(Number(r.lastInsertRowid));
     else skipped.push(url);
   }
@@ -172,4 +197,40 @@ export function cleanup(retentionDays) {
   const cutoff = Date.now() - retentionDays * 864e5;
   db.prepare('DELETE FROM checks WHERE ts < ?').run(cutoff);
   db.prepare('DELETE FROM alerts WHERE ack = 1 AND ts < ?').run(Date.now() - 90 * 864e5);
+}
+
+// ---------- Export / import ----------
+// Alle data (websites, companies, checks, meldingen) als gzip-JSON, zodat een nieuwe
+// installatie (bv. online) met de volledige historie kan starten. Screenshots niet:
+// die worden bij de eerste ronde opnieuw gemaakt.
+export const SEED_FILE = path.join(ROOT, 'seed', 'seed.json.gz');
+const TABLES = ['companies', 'sites', 'checks', 'alerts'];
+
+export function exportSeed(file = SEED_FILE) {
+  const data = { exportedAt: Date.now() };
+  for (const t of TABLES) data[t] = db.prepare(`SELECT * FROM ${t} ORDER BY id`).all();
+  for (const s of data.sites) { s.shot_at = null; s.prev_shot_at = null; }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, zlib.gzipSync(JSON.stringify(data), { level: 9 }));
+  return Object.fromEntries(TABLES.map((t) => [t, data[t].length]));
+}
+
+export function importSeed(file = SEED_FILE) {
+  const data = JSON.parse(zlib.gunzipSync(fs.readFileSync(file)));
+  db.exec('BEGIN');
+  try {
+    for (const t of TABLES) {
+      db.exec(`DELETE FROM ${t}`);
+      const rows = data[t] || [];
+      if (!rows.length) continue;
+      const cols = Object.keys(rows[0]);
+      const st = db.prepare(`INSERT INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`);
+      for (const r of rows) st.run(...cols.map((c) => r[c]));
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  return Object.fromEntries(TABLES.map((t) => [t, (data[t] || []).length]));
 }

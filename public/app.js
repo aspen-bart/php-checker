@@ -34,6 +34,54 @@ const state = {
   siteSort: store.get('siteSort', { key: 'level', dir: 'asc' }),
   chkSort: { key: 'ts', dir: 'desc' },
   chkPage: 0,
+  selected: new Set(),
+  company: store.get('company', ''), // overkoepelend company-filter
+};
+
+// ---------- Companies ----------
+// Effectief company-filter voor een tabel: overkoepelend filter gaat voor.
+const companyFor = (sel) => state.company || $(sel).value;
+
+function fillCompanySelects() {
+  const list = overview.companies || [];
+  const opts = list.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  const key = list.map((c) => c.id + c.name).join('|');
+  for (const el of document.querySelectorAll('select.company-select')) {
+    if (el.dataset.key === key) continue;
+    const v = el.value;
+    const pick = el.id === 'addCompany' || el.id === 'bulkCompany';
+    el.innerHTML = (pick ? '' : '<option value="">Alle companies</option>') + opts +
+      (pick ? '<option value="__new">+ Nieuwe company…</option>' : '');
+    el.dataset.key = key;
+    if (v) el.value = v;
+  }
+  $('#globalCompany').value = state.company;
+  $('#globalCompany').classList.toggle('active', !!state.company);
+  for (const id of ['#siteCompany', '#chkCompany', '#alCompany']) {
+    if (state.company) $(id).value = state.company;
+    $(id).disabled = !!state.company;
+    $(id).title = state.company ? 'Vastgezet door het company-filter bovenin' : '';
+  }
+  if (state.company && !$('#addCompany').dataset.touched) $('#addCompany').value = state.company;
+}
+
+async function pickCompany(el) {
+  if (el.value !== '__new') return el.value;
+  const name = prompt('Naam van de nieuwe company:');
+  if (!name) { el.selectedIndex = 0; return null; }
+  const c = await api('/companies', { body: { name } });
+  await refresh();
+  el.value = c.id;
+  return String(c.id);
+}
+
+$('#globalCompany').onchange = () => {
+  state.company = $('#globalCompany').value;
+  store.set('company', state.company);
+  if (!state.company) for (const id of ['#siteCompany', '#chkCompany', '#alCompany']) $(id).value = '';
+  state.selected.clear();
+  state.chkPage = 0;
+  refresh();
 };
 
 // ---------- Tabs ----------
@@ -50,8 +98,10 @@ window.addEventListener('hashchange', showTab);
 // ---------- Overzicht / polling ----------
 async function refresh() {
   try {
-    overview = await api('/overview');
+    overview = await api('/overview' + (state.company ? `?company=${state.company}` : ''));
     overview.fetchedAt = Date.now();
+    overview.allSites = overview.sites;
+    if (state.company) overview.sites = overview.sites.filter((s) => String(s.company_id) === String(state.company));
     // Handmatige offline-tag gaat voor op het automatische resultaat.
     for (const s of overview.sites) {
       s.autoLevel = s.level;
@@ -61,6 +111,7 @@ async function refresh() {
     $('#runStatus').textContent = '⚠ Server niet bereikbaar';
     return;
   }
+  fillCompanySelects();
   renderStatus();
   renderSites();
   fillSiteSelects();
@@ -131,17 +182,23 @@ function renderSites() {
 
   const q = $('#siteSearch').value.trim().toLowerCase();
   const { key, dir } = state.siteSort;
-  const val = (s) => (key === 'level' ? SEVERITY[s.level] ?? 9 : key === 'php' ? phpSort(s) : s[key] ?? (dir === 'asc' ? Infinity : -Infinity));
+  const val = (s) => (key === 'level' ? SEVERITY[s.level] ?? 9 : key === 'php' ? phpSort(s) : key === 'company' ? s.company || '~' : s[key] ?? (dir === 'asc' ? Infinity : -Infinity));
+  const comp = companyFor('#siteCompany');
   const phpSel = $('#sitePhp').value;
   const list = sites
     .filter((s) => (!sel || s.level === sel) && (!phpSel || phpClass(s) === phpSel) &&
-      (!q || (s.name + s.url + s.title + ' php ' + (s.php_version || '') + ' ' + (s.php_platform || '')).toLowerCase().includes(q)))
+      (!comp || String(s.company_id) === String(comp)) &&
+      (!q || (s.name + s.url + s.title + ' ' + (s.company || '') + ' php ' + (s.php_version || '') + ' ' + (s.php_platform || '')).toLowerCase().includes(q)))
     .sort((a, b) => {
       const x = val(a), y = val(b);
       const c = typeof x === 'string' ? x.localeCompare(y) : x - y;
       return (dir === 'asc' ? c : -c) || a.name.localeCompare(b.name);
     });
   $('#siteCount').textContent = `${list.length} van ${sites.length}`;
+  // Selectie opschonen (verwijderde sites).
+  const known = new Set(overview.allSites.map((s) => s.id));
+  for (const id of state.selected) if (!known.has(id)) state.selected.delete(id);
+  state.visibleIds = list.map((s) => s.id);
   markSort('#sitesTable', state.siteSort);
 
   $('#sitesTable tbody').innerHTML = list.map((s) => {
@@ -149,7 +206,9 @@ function renderSites() {
     const thumb = s.shot_at
       ? `<img class="thumb" loading="lazy" src="/shots/${s.id}/current.png?t=${s.shot_at}" data-cmp="${s.id}" alt="">`
       : '<span class="muted">–</span>';
-    return `<tr class="row-${esc(s.level)} ${s.enabled ? '' : 'disabled'}">
+    const checked = state.selected.has(s.id);
+    return `<tr class="row-${esc(s.level)} ${s.enabled ? '' : 'disabled'} ${checked ? 'selected' : ''}">
+      <td class="chk"><input type="checkbox" data-sel="${s.id}" ${checked ? 'checked' : ''}></td>
       <td>${s.queued ? '<span class="spin">⟳</span> ' : ''}${pill(s.level)}
         ${s.manual_offline ? `<div class="tag manual" title="Handmatig gezet op ${fmtTime(s.manual_offline_at)}">✋ handmatig</div>` : ''}
         ${s.last_signals.some((g) => g.key.startsWith('notice:')) ? '<div class="tag manual" title="De pagina meldt zelf dat hij offline/in onderhoud/gehackt is">🔎 melding op pagina</div>' : ''}</td>
@@ -157,6 +216,7 @@ function renderSites() {
         <div class="sub" title="${esc(s.title)}">${esc(s.title)}</div>
         ${s.manual_offline ? `<div class="sig critical">✋ Handmatig offline${s.manual_note ? ': ' + esc(s.manual_note) : ''} <span class="muted">(${fmtTime(s.manual_offline_at)})</span></div>` : ''}
         ${s.manual_offline && s.autoLevel !== 'offline' ? `<div class="sig muted">Automatische check: ${esc(LEVELS[s.autoLevel] || s.autoLevel)}</div>` : ''}${sigs}</td>
+      <td>${s.company ? `<span class="cbadge">${esc(s.company)}</span>` : '<span class="muted">–</span>'}</td>
       <td class="num">${s.last_status ?? '–'}</td>
       <td class="num">${phpCell(s)}</td>
       <td class="num">${s.last_ms != null ? (s.last_ms / 1000).toFixed(1) + ' s' : '–'}</td>
@@ -175,7 +235,8 @@ function renderSites() {
         <button data-act="delete" data-id="${s.id}" title="Verwijderen">🗑</button>
       </div></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="9" class="muted">Geen websites gevonden.</td></tr>';
+  }).join('') || '<tr><td colspan="11" class="muted">Geen websites gevonden.</td></tr>';
+  renderBulkBar();
 }
 
 function markSort(table, { key, dir }) {
@@ -194,6 +255,38 @@ $('#cards').onclick = (e) => {
 $('#siteSearch').oninput = renderSites;
 $('#siteLevel').onchange = renderSites;
 $('#sitePhp').onchange = renderSites;
+$('#siteCompany').onchange = renderSites;
+
+// ---------- Bulk-selectie ----------
+function renderBulkBar() {
+  const n = state.selected.size;
+  $('#bulkBar').classList.toggle('hidden', !n);
+  $('#bulkCount').textContent = `${n} website${n === 1 ? '' : 's'} geselecteerd`;
+  const vis = state.visibleIds || [];
+  const selVis = vis.filter((id) => state.selected.has(id)).length;
+  $('#selAll').checked = vis.length > 0 && selVis === vis.length;
+  $('#selAll').indeterminate = selVis > 0 && selVis < vis.length;
+}
+$('#selAll').onchange = () => {
+  const on = $('#selAll').checked;
+  for (const id of state.visibleIds || []) on ? state.selected.add(id) : state.selected.delete(id);
+  renderSites();
+};
+$('#bulkClear').onclick = () => { state.selected.clear(); renderSites(); };
+$('#bulkApply').onclick = async () => {
+  const cid = await pickCompany($('#bulkCompany'));
+  if (!cid) return;
+  const name = overview.companies.find((c) => String(c.id) === String(cid))?.name;
+  if (!confirm(`${state.selected.size} website(s) toewijzen aan "${name}"?`)) return;
+  await api('/sites/bulk', { body: { action: 'company', ids: [...state.selected], company_id: +cid } });
+  state.selected.clear();
+  refresh();
+};
+$('#bulkCheck').onclick = async () => {
+  await api('/sites/bulk', { body: { action: 'check', ids: [...state.selected] } });
+  refresh();
+};
+$('#addCompany').onchange = async () => { $('#addCompany').dataset.touched = '1'; await pickCompany($('#addCompany')); };
 $('#sitesTable thead').onclick = (e) => {
   const k = e.target.closest('th')?.dataset.sort;
   if (!k) return;
@@ -204,6 +297,13 @@ $('#sitesTable thead').onclick = (e) => {
 };
 
 $('#sitesTable tbody').onclick = async (e) => {
+  const cb = e.target.closest('input[data-sel]');
+  if (cb) {
+    const id = +cb.dataset.sel;
+    cb.checked ? state.selected.add(id) : state.selected.delete(id);
+    cb.closest('tr').classList.toggle('selected', cb.checked);
+    return renderBulkBar();
+  }
   const img = e.target.closest('[data-cmp]');
   if (img) return openCompare(+img.dataset.cmp);
   const b = e.target.closest('button[data-act]');
@@ -238,7 +338,7 @@ $('#sitesTable tbody').onclick = async (e) => {
 };
 
 $('#addBtn').onclick = async () => {
-  const r = await api('/sites', { body: { urls: $('#addUrls').value } });
+  const r = await api('/sites', { body: { urls: $('#addUrls').value, company_id: +$('#addCompany').value || null } });
   $('#addResult').textContent = `${r.added.length} toegevoegd` + (r.skipped.length ? `, ${r.skipped.length} overgeslagen (dubbel/ongeldig)` : '');
   if (r.added.length) $('#addUrls').value = '';
   refresh();
@@ -248,7 +348,7 @@ $('#runNow').onclick = async () => { await api('/run-now', { body: {} }); refres
 
 // ---------- Vergelijken ----------
 async function openCompare(id) {
-  const s = overview.sites.find((x) => x.id === id);
+  const s = overview.allSites.find((x) => x.id === id);
   $('#cmpTitle').textContent = s.name;
   $('#cmpDiff').checked = false;
   $('#cmpCanvas').classList.add('hidden');
@@ -289,7 +389,9 @@ function drawDiff() {
 function fillSiteSelects() {
   for (const sel of ['#chkSite', '#alSite']) {
     const el = $(sel);
-    if (el.options.length - 1 === overview.sites.length) continue;
+    const key = overview.sites.map((s) => s.id).join(',');
+    if (el.dataset.key === key) continue;
+    el.dataset.key = key;
     const v = el.value;
     el.innerHTML = '<option value="">Alle websites</option>' +
       overview.sites.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
@@ -299,7 +401,7 @@ function fillSiteSelects() {
 
 async function loadChecks() {
   const p = new URLSearchParams({
-    site: $('#chkSite').value, level: $('#chkLevel').value, hours: $('#chkHours').value,
+    site: $('#chkSite').value, company: companyFor('#chkCompany'), level: $('#chkLevel').value, hours: $('#chkHours').value,
     q: $('#chkSearch').value.trim(), sort: state.chkSort.key, dir: state.chkSort.dir, page: state.chkPage, limit: 100,
   });
   const r = await api('/checks?' + p);
@@ -314,14 +416,15 @@ async function loadChecks() {
   $('#checksTable tbody').innerHTML = r.rows.map((c) => `<tr class="row-${esc(c.level)}">
       <td class="num">${fmtTime(c.ts)}</td>
       <td class="site"><a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.name)}</a></td>
+      <td>${c.company ? `<span class="cbadge">${esc(c.company)}</span>` : '–'}</td>
       <td>${pill(c.level)}</td>
       <td class="num">${c.status ?? '–'}</td>
       <td class="num">${c.ms != null ? (c.ms / 1000).toFixed(1) + ' s' : '–'}</td>
       <td class="num">${c.diff != null ? c.diff + ' %' : '–'}</td>
       <td>${c.signals.map((g) => `<div class="sig ${esc(g.level)}">${esc(g.msg)}</div>`).join('') || (c.error ? `<span class="muted">${esc(c.error)}</span>` : '<span class="muted">Geen afwijkingen</span>')}</td>
-    </tr>`).join('') || '<tr><td colspan="7" class="muted">Geen checks gevonden voor deze filters.</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="8" class="muted">Geen checks gevonden voor deze filters.</td></tr>';
 }
-for (const id of ['#chkSite', '#chkLevel', '#chkHours']) $(id).onchange = () => { state.chkPage = 0; loadChecks(); };
+for (const id of ['#chkCompany', '#chkSite', '#chkLevel', '#chkHours']) $(id).onchange = () => { state.chkPage = 0; loadChecks(); };
 let chkTimer;
 $('#chkSearch').oninput = () => { clearTimeout(chkTimer); chkTimer = setTimeout(() => { state.chkPage = 0; loadChecks(); }, 300); };
 $('#chkChips').onclick = (e) => {
@@ -343,12 +446,13 @@ $('#chkNext').onclick = () => { state.chkPage++; loadChecks(); };
 
 // ---------- Meldingen ----------
 async function loadAlerts() {
-  const p = new URLSearchParams({ state: $('#alState').value, level: $('#alLevel').value, site: $('#alSite').value });
+  const p = new URLSearchParams({ state: $('#alState').value, level: $('#alLevel').value, site: $('#alSite').value, company: companyFor('#alCompany') });
   const rows = await api('/alerts?' + p);
   $('#alertList').innerHTML = rows.map((a) => `<div class="alert ${esc(a.level)} ${a.ack ? 'acked' : ''}">
       <div>${pill(a.level)}</div>
       <div class="body">
         <strong>${esc(a.title)} – <a href="${esc(a.url)}" target="_blank" rel="noopener noreferrer">${esc(a.name)}</a></strong>
+        ${a.company ? `<span class="cbadge">${esc(a.company)}</span>` : ''}
         <div class="meta">${fmtTime(a.ts)}${a.ack ? ` · afgehandeld ${fmtTime(a.ack_at)}` : ''}</div>
         <div class="msg">${esc(a.message)}</div>
       </div>
@@ -358,7 +462,7 @@ async function loadAlerts() {
       </div>
     </div>`).join('') || '<p class="muted">Geen meldingen.</p>';
 }
-for (const id of ['#alState', '#alLevel', '#alSite']) $(id).onchange = loadAlerts;
+for (const id of ['#alState', '#alLevel', '#alCompany', '#alSite']) $(id).onchange = loadAlerts;
 $('#alertList').onclick = async (e) => {
   const ack = e.target.closest('[data-ack]');
   if (ack) { await api(`/alerts/${ack.dataset.ack}/ack`, { body: {} }); refresh(); }
@@ -366,8 +470,9 @@ $('#alertList').onclick = async (e) => {
   if (cmp) openCompare(+cmp.dataset.cmp);
 };
 $('#ackAll').onclick = async () => {
-  if (!confirm('Alle open meldingen afhandelen?')) return;
-  await api('/alerts/ack-all', { body: {} });
+  const cname = overview.companies.find((c) => String(c.id) === String(state.company))?.name;
+  if (!confirm(cname ? `Alle open meldingen van ${cname} afhandelen?` : 'Alle open meldingen afhandelen?')) return;
+  await api('/alerts/ack-all', { body: { company: +state.company || null } });
   refresh();
 };
 
@@ -376,7 +481,7 @@ let lastSeen = store.get('lastAlertId', null);
 async function checkNewAlerts() {
   if (lastSeen == null) { lastSeen = overview.latestAlertId; store.set('lastAlertId', lastSeen); return; }
   if (overview.latestAlertId <= lastSeen) return;
-  const fresh = (await api(`/alerts?after=${lastSeen}`)).reverse();
+  const fresh = (await api(`/alerts?after=${lastSeen}` + (state.company ? `&company=${state.company}` : ''))).reverse();
   lastSeen = overview.latestAlertId;
   store.set('lastAlertId', lastSeen);
   if (fresh.some((a) => a.level !== 'info')) beep(fresh.some((a) => a.level === 'hacked'));

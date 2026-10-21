@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ROOT, SHOTS_DIR, db, listSites, getSite, addSites, deleteSite, updateSite,
-  insertCheck, insertAlert, cleanup,
+  insertCheck, insertAlert, cleanup, listCompanies, addCompany, setCompany,
+  SEED_FILE, importSeed,
 } from './store.js';
 import { checkSite, closeBrowser, browserInfo } from './checker.js';
 
@@ -13,8 +14,11 @@ const INTERVAL_MIN = Number(process.env.INTERVAL_MIN) || 10;
 const CONCURRENCY = Number(process.env.CONCURRENCY) || 8;
 const RETENTION_DAYS = Number(process.env.RETENTION_DAYS) || 14;
 
-// Eerste start: klantenlijst inladen.
-if (!listSites().length && fs.existsSync(path.join(ROOT, 'sites.txt'))) {
+// Eerste start: volledige export (seed/) inladen, anders alleen de websitelijst.
+if (!listSites().length && fs.existsSync(SEED_FILE)) {
+  const r = importSeed();
+  console.log(`Seed ingeladen: ${r.sites} websites, ${r.checks} checks, ${r.alerts} meldingen`);
+} else if (!listSites().length && fs.existsSync(path.join(ROOT, 'sites.txt'))) {
   const r = addSites(fs.readFileSync(path.join(ROOT, 'sites.txt'), 'utf8').split(/\r?\n/));
   console.log(`${r.added.length} websites ingeladen uit sites.txt`);
 }
@@ -113,6 +117,23 @@ scheduleTick();
 
 // ---------- API ----------
 const app = express();
+
+// Inloggen (verplicht als de tool online staat): zet AUTH_USER en AUTH_PASS.
+const AUTH_USER = process.env.AUTH_USER || 'admin';
+const AUTH_PASS = process.env.AUTH_PASS || '';
+if (AUTH_PASS) {
+  app.use((req, res, next) => {
+    const [type, token] = String(req.headers.authorization || '').split(' ');
+    if (type === 'Basic' && token) {
+      const [u, ...p] = Buffer.from(token, 'base64').toString().split(':');
+      if (u === AUTH_USER && p.join(':') === AUTH_PASS) return next();
+    }
+    res.set('WWW-Authenticate', 'Basic realm="Website Monitor", charset="UTF-8"').status(401).send('Inloggen vereist');
+  });
+} else if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
+  console.warn('LET OP: de tool is bereikbaar via het netwerk zonder wachtwoord. Zet AUTH_PASS!');
+}
+
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(ROOT, 'public')));
 app.use('/shots', express.static(SHOTS_DIR, { maxAge: 0 }));
@@ -123,10 +144,15 @@ const publicSite = (s) => {
 };
 
 app.get('/api/overview', (req, res) => {
-  const open = db.prepare('SELECT COUNT(*) AS n FROM alerts WHERE ack = 0 AND level != \'info\'').get().n;
+  const company = +req.query.company || null;
+  const open = db
+    .prepare(`SELECT COUNT(*) AS n FROM alerts a JOIN sites s ON s.id = a.site_id
+      WHERE a.ack = 0 AND a.level != 'info' ${company ? 'AND s.company_id = ?' : ''}`)
+    .get(...(company ? [company] : [])).n;
   const latest = db.prepare('SELECT MAX(id) AS id FROM alerts').get().id || 0;
   res.json({
     sites: listSites().map(publicSite),
+    companies: listCompanies(),
     openAlerts: open,
     latestAlertId: latest,
     status: {
@@ -138,9 +164,25 @@ app.get('/api/overview', (req, res) => {
 
 app.post('/api/sites', (req, res) => {
   const lines = String(req.body?.urls || '').split(/[\r\n,\s]+/);
-  const r = addSites(lines);
+  const r = addSites(lines, +req.body?.company_id || null);
   enqueue(r.added, true);
   res.json(r);
+});
+
+app.post('/api/companies', (req, res) => {
+  const c = addCompany(req.body?.name);
+  if (!c) return res.status(400).json({ error: 'Naam ontbreekt' });
+  res.json(c);
+});
+
+// Bulk-acties op geselecteerde websites.
+app.post('/api/sites/bulk', (req, res) => {
+  const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter(Boolean);
+  const action = req.body?.action;
+  if (action === 'company') setCompany(ids, +req.body.company_id || null);
+  else if (action === 'check') enqueue(ids, true);
+  else return res.status(400).json({ error: 'Onbekende actie' });
+  res.json({ ok: true, count: ids.length });
 });
 
 app.patch('/api/sites/:id', (req, res) => {
@@ -210,19 +252,20 @@ app.get('/api/checks', (req, res) => {
   const where = [];
   const p = {};
   if (req.query.site) { where.push('c.site_id = :site'); p.site = +req.query.site; }
+  if (req.query.company) { where.push('s.company_id = :company'); p.company = +req.query.company; }
   if (req.query.level) { where.push('c.level = :level'); p.level = String(req.query.level); }
   if (req.query.hours) { where.push('c.ts >= :since'); p.since = Date.now() - +req.query.hours * 3600e3; }
   if (req.query.q) { where.push('(s.name LIKE :q OR c.signals LIKE :q OR c.error LIKE :q)'); p.q = `%${req.query.q}%`; }
-  const sorts = { ts: 'c.ts', site: 's.name', level: LEVEL_ORDER, status: 'c.status', ms: 'c.ms', diff: 'c.diff' };
+  const sorts = { ts: 'c.ts', site: 's.name', company: 'co.name', level: LEVEL_ORDER, status: 'c.status', ms: 'c.ms', diff: 'c.diff' };
   const sort = sorts[req.query.sort] || 'c.ts';
   const dir = req.query.dir === 'asc' ? 'ASC' : 'DESC';
   const limit = Math.min(500, +req.query.limit || 100);
   const page = Math.max(0, +req.query.page || 0);
   const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const from = `FROM checks c JOIN sites s ON s.id = c.site_id ${w}`;
+  const from = `FROM checks c JOIN sites s ON s.id = c.site_id LEFT JOIN companies co ON co.id = s.company_id ${w}`;
   const total = db.prepare(`SELECT COUNT(*) AS n ${from}`).get(p).n;
   const rows = db
-    .prepare(`SELECT c.*, s.name, s.url ${from} ORDER BY ${sort} ${dir}, c.id DESC LIMIT ${limit} OFFSET ${page * limit}`)
+    .prepare(`SELECT c.*, s.name, s.url, co.name AS company ${from} ORDER BY ${sort} ${dir}, c.id DESC LIMIT ${limit} OFFSET ${page * limit}`)
     .all(p)
     .map((r) => ({ ...r, signals: JSON.parse(r.signals || '[]') }));
   const counts = Object.fromEntries(
@@ -238,10 +281,11 @@ app.get('/api/alerts', (req, res) => {
   if (req.query.state === 'done') where.push('a.ack = 1');
   if (req.query.level) { where.push('a.level = :level'); p.level = String(req.query.level); }
   if (req.query.site) { where.push('a.site_id = :site'); p.site = +req.query.site; }
+  if (req.query.company) { where.push('s.company_id = :company'); p.company = +req.query.company; }
   if (req.query.after) { where.push('a.id > :after'); p.after = +req.query.after; }
   const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const rows = db
-    .prepare(`SELECT a.*, s.name, s.url FROM alerts a JOIN sites s ON s.id = a.site_id ${w} ORDER BY a.id DESC LIMIT 500`)
+    .prepare(`SELECT a.*, s.name, s.url, co.name AS company FROM alerts a JOIN sites s ON s.id = a.site_id LEFT JOIN companies co ON co.id = s.company_id ${w} ORDER BY a.id DESC LIMIT 500`)
     .all(p);
   res.json(rows);
 });
@@ -252,7 +296,10 @@ app.post('/api/alerts/:id/ack', (req, res) => {
 });
 
 app.post('/api/alerts/ack-all', (req, res) => {
-  db.prepare('UPDATE alerts SET ack = 1, ack_at = ? WHERE ack = 0').run(Date.now());
+  const company = +req.body?.company || null;
+  if (company)
+    db.prepare('UPDATE alerts SET ack = 1, ack_at = ? WHERE ack = 0 AND site_id IN (SELECT id FROM sites WHERE company_id = ?)').run(Date.now(), company);
+  else db.prepare('UPDATE alerts SET ack = 1, ack_at = ? WHERE ack = 0').run(Date.now());
   res.json({ ok: true });
 });
 

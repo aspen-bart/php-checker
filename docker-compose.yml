@@ -1,0 +1,17 @@
+services:
+  website-monitor:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "4300:4300"
+    environment:
+      AUTH_USER: ${AUTH_USER:-admin}
+      AUTH_PASS: ${AUTH_PASS:?Zet AUTH_PASS (wachtwoord) in .env}
+      INTERVAL_MIN: ${INTERVAL_MIN:-10}
+      CONCURRENCY: ${CONCURRENCY:-8}
+    volumes:
+      - monitor-data:/app/data
+    shm_size: 1gb
+
+volumes:
+  monitor-data:
