@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Website Monitor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">🛡️ Website Monitor</div>
+    <nav>
+      <a href="#sites" data-tab="sites">Websites</a>
+      <a href="#checks" data-tab="checks">Checks</a>
+      <a href="#alerts" data-tab="alerts">Meldingen <span id="alertBadge" class="badge hidden">0</span></a>
+    </nav>
+    <div class="runinfo">
+      <span id="runStatus">…</span>
+      <button id="runNow" class="btn small">Nu alles checken</button>
+      <button id="notifBtn" class="btn small ghost" title="Bureaubladmeldingen inschakelen">🔔</button>
+    </div>
+  </header>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <main>
+    <!-- WEBSITES -->
+    <section id="tab-sites" class="tab">
+      <div class="cards" id="cards"></div>
+
+      <details class="addbox">
+        <summary>+ Websites toevoegen</summary>
+        <textarea id="addUrls" rows="5" placeholder="Eén URL per regel, bv.&#10;https://www.klant.nl/&#10;klant2.nl"></textarea>
+        <div class="row">
+          <button id="addBtn" class="btn">Toevoegen</button>
+          <span id="addResult" class="muted"></span>
+        </div>
+      </details>
+
+      <div class="toolbar">
+        <input id="siteSearch" type="search" placeholder="Zoek website…">
+        <select id="siteLevel">
+          <option value="">Alle statussen</option>
+          <option value="hacked">Mogelijk gehackt</option>
+          <option value="offline">Offline</option>
+          <option value="warning">Waarschuwing</option>
+          <option value="ok">Online</option>
+          <option value="new">Nog niet gecontroleerd</option>
+        </select>
+        <select id="sitePhp">
+          <option value="">PHP: alle</option>
+          <option value="old">PHP verouderd (&lt; 8.2, geen updates meer)</option>
+          <option value="ending">PHP 8.2 (einde support dec 2026)</option>
+          <option value="current">PHP actueel (8.3+)</option>
+          <option value="hidden">PHP, versie verborgen</option>
+          <option value="none">Geen PHP gedetecteerd</option>
+        </select>
+        <span class="muted" id="siteCount"></span>
+      </div>
+
+      <div class="tablewrap">
+        <table class="grid" id="sitesTable">
+          <thead><tr>
+            <th data-sort="level">Status</th>
+            <th data-sort="name">Website</th>
+            <th data-sort="last_status">HTTP</th>
+            <th data-sort="php">PHP</th>
+            <th data-sort="last_ms">Laadtijd</th>
+            <th data-sort="last_diff">Visueel verschil</th>
+            <th data-sort="last_check_at">Laatste check</th>
+            <th>Screenshot</th>
+            <th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- CHECKS -->
+    <section id="tab-checks" class="tab hidden">
+      <div class="toolbar">
+        <select id="chkSite"><option value="">Alle websites</option></select>
+        <select id="chkLevel">
+          <option value="">Alle resultaten</option>
+          <option value="hacked">Mogelijk gehackt</option>
+          <option value="offline">Offline</option>
+          <option value="warning">Waarschuwing</option>
+          <option value="ok">Online / OK</option>
+        </select>
+        <select id="chkHours">
+          <option value="1">Laatste uur</option>
+          <option value="24" selected>Laatste 24 uur</option>
+          <option value="168">Laatste 7 dagen</option>
+          <option value="">Alles</option>
+        </select>
+        <input id="chkSearch" type="search" placeholder="Zoek in signalen / fouten…">
+        <span class="muted" id="chkCount"></span>
+      </div>
+      <div class="chips" id="chkChips"></div>
+      <div class="tablewrap">
+        <table class="grid" id="checksTable">
+          <thead><tr>
+            <th data-sort="ts">Tijd</th>
+            <th data-sort="site">Website</th>
+            <th data-sort="level">Resultaat</th>
+            <th data-sort="status">HTTP</th>
+            <th data-sort="ms">Laadtijd</th>
+            <th data-sort="diff">Visueel verschil</th>
+            <th>Signalen</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button id="chkPrev" class="btn small ghost">← Vorige</button>
+        <span id="chkPage"></span>
+        <button id="chkNext" class="btn small ghost">Volgende →</button>
+      </div>
+    </section>
+
+    <!-- MELDINGEN -->
+    <section id="tab-alerts" class="tab hidden">
+      <div class="toolbar">
+        <select id="alState">
+          <option value="open">Open</option>
+          <option value="done">Afgehandeld</option>
+          <option value="">Alle</option>
+        </select>
+        <select id="alLevel">
+          <option value="">Alle typen</option>
+          <option value="hacked">Mogelijk gehackt</option>
+          <option value="offline">Offline</option>
+          <option value="warning">Waarschuwing</option>
+          <option value="info">Hersteld</option>
+        </select>
+        <select id="alSite"><option value="">Alle websites</option></select>
+        <button id="ackAll" class="btn small ghost">Alles afhandelen</button>
+      </div>
+      <div id="alertList"></div>
+    </section>
+  </main>
+
+  <dialog id="cmp">
+    <div class="cmphead">
+      <strong id="cmpTitle"></strong>
+      <label><input type="checkbox" id="cmpDiff"> Toon verschillen</label>
+      <button class="btn small ghost" id="cmpClose">Sluiten</button>
+    </div>
+    <div class="cmpbody">
+      <figure><figcaption id="cmpPrevCap">Vorige check</figcaption><img id="cmpPrev" alt=""></figure>
+      <figure><figcaption id="cmpCurCap">Nu</figcaption><img id="cmpCur" alt=""><canvas id="cmpCanvas" class="hidden"></canvas></figure>
+    </div>
+    <div id="cmpSignals"></div>
+  </dialog>
+
+  <div id="toasts"></div>
+  <script src="app.js"></script>
+</body>
+</html>

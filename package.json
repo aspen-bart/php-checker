@@ -1,0 +1,19 @@
+{
+  "name": "website-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Interne tool: controleert elke 5 minuten of klantwebsites online zijn en of de homepage er nog hetzelfde uitziet (hack-detectie).",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pixelmatch": "^7.1.0",
+    "playwright-core": "^1.48.2",
+    "pngjs": "^7.0.0"
+  }
+}
