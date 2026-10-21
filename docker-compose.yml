@@ -3,7 +3,8 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "4300:4300"
+      # Alleen lokaal op de server; Plesk/nginx stuurt het subdomein hierheen door.
+      - "127.0.0.1:4300:4300"
     environment:
       AUTH_USER: ${AUTH_USER:-admin}
       AUTH_PASS: ${AUTH_PASS:?Zet AUTH_PASS (wachtwoord) in .env}
